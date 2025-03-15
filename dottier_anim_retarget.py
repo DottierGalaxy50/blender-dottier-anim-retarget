@@ -38,7 +38,7 @@ def check_scene_vars():
         
     #Updates bone list if it was created before the latest update
     if "l_exact" not in bpy.context.scene["dottier_retarget_vars"]["lst_bones"][0]: 
-        for bone in lst_bones:
+        for bone in bpy.context.scene["dottier_retarget_vars"]["lst_bones"]:
             bone["l_exact"] = False
             bone["p_propagate"] = ""
 
