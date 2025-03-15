@@ -8,7 +8,7 @@ Go into the Sidebar (N) of the 3D Viewport and select "Dottier's Anim Retarget".
 
 **Select the Source and Target armatures. Source is the armature we want to copy the animations from while Target is the armature we want to transfer them to.** 
 
-The Source armature should have the animation we want to transfer active. Any existing keyframes on the Target armature will be replaced once we update them with our configuration, only Euler rotations are excluded because the add-on keyframes the rotation in quaternion. **I recommend removing any keyframes on the Target armature to avoid possible problems. We can change both the Source and Target armatures later even after changing the bones properties on the panel as the properties aren't directly associated with the armatures but with the current scene.** The configuration is saved in the blend file.
+The Source armature should have the animation we want to transfer active. Any existing keyframes on the Target armature will be replaced once we update them with our configuration, only Euler rotations are excluded because the add-on keyframes the rotation in quaternion. **I recommend removing any keyframes from the Target armature to avoid possible issues. We can change both the Source and Target armatures even after changing the bones properties as the properties aren't directly associated with the armatures but with the bone names.** The configuration is saved in the blend file.
 
 ![Capturealt](https://github.com/user-attachments/assets/4a18836e-b12a-4dfd-a159-4ad6dbd9a78a)
 
@@ -36,15 +36,21 @@ The _Offset_ properties apply an offset to the Target Bones. _Location Offset_ w
 
 > Changing a rotation related property or using _"Apply view as Offset"_ will correct the rotation for all the children of the selected Target Bones which are copying the exact rotation of their Source Bone. This doesn't apply to rotation changes made on the 3D Viewport.
 
-**_"Copy Rotation"_**. Copies the exact global rotation of the Source Bone.
+**_"Copy Rotation"_**. Copies the exact world rotation of the Source Bone.
 
-**_"Copy Location"_**. Copies the exact global location change of the Source Bone, this is the change relative to the Source Bone's origin which then gets applied to the current Target Bone's location.
+**_"Copy Location Change"_**. Copies the exact world location change of the Source Bone, this is the change relative to the Source Bone's origin which then gets applied to the current Target Bone's world location.
 
-**_"Move to Exact"_**. Moves the Target Bone to the exact location of the Source Bone relative to the armature's current location, this means that the location will only be exact when both armature objects are at the same location.
+**_"Move to Exact"_**. Moves the Target Bone to the exact location of the Source Bone relative to his armature's current location, this means that the location will only be exact when both armature objects are at the same location.
 
 **_"Influence"_**. How much of the location change to apply. The side button sets a rough estimate of the influence obtained by comparing two lengths obtained from the Source Bone and Target bone up to a parent shared by both on their respective armatures.
 
 **_"Set current location as Base"_**. Uses the current location of the Source Bone as his new "origin" from which to apply the location change from. Useful in cases where the _Rest Pose_ of the Source armature doesn't represent an actual "natural pose" of the armature.
+
+**_"Copy Exact Location"_**. Copies the exact location of the Source Bone relative to his armature's current location. Doesn't copy the location change and gets affected by any location offsets the parents he propagates to have.
+
+> Changing some of the properties from the panel will update every child Target Bone from the selected Target Bones that have the "Copy Exact Location" property checked.
+
+**_"Propagate to"_**. Propagates the location transformation of \"Copy Exact Location\" up to a parent of the Target Bone, like some sort of translation-only IK. No more than one Target Bone should propagate to the same bones to avoid issues.
 
 **_"Save Config"_** and **_"Load Config"_** allows you to save the current configuration on a .txt file that could be loaded later. If a Target Bone entry is left empty in the list, the row will be ignored.
 
