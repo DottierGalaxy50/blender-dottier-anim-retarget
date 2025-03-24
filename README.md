@@ -8,7 +8,7 @@ Go into the Sidebar (N) of the 3D Viewport and select "Dottier's Anim Retarget".
 
 **Select the Source and Target armatures. Source is the armature we want to copy the animations from while Target is the armature we want to transfer them to.** 
 
-The Source armature should have the animation we want to transfer active. Any existing keyframes on the Target armature will be replaced once we update them with our configuration, only Euler rotations are excluded because the add-on keyframes the rotation in quaternion. **I recommend removing any keyframes from the Target armature to avoid possible issues. We can change both the Source and Target armatures even after changing the bones properties as the properties aren't directly associated with the armatures but with the bone names.** The configuration is saved in the blend file.
+The Source armature should have the animation we want to transfer active. Any existing keyframes on the Target armature will be replaced once we update them with our configuration, only Euler rotations are excluded because the add-on keyframes the rotation in quaternion. **I recommend removing any keyframes from the Target armature to avoid possible issues. We can change both the Source and Target armatures even after changing the bones properties as the properties aren't directly associated with the armatures but with the names of the bones, which means you have to be careful while working with multiple armatures as the configuration can get mixed.** The configuration is saved in the blend file.
 
 ![Capturealt](https://github.com/user-attachments/assets/4a18836e-b12a-4dfd-a159-4ad6dbd9a78a)
 
@@ -32,11 +32,12 @@ Once we have the desired Target Bones correctly linked, we can start making adju
 
 **_"Apply view as Offset"_**. Allows you to make transform changes outside of the panel on the 3D Viewport and apply those changes as an Offset. The side button clears those unapplied transform changes.
 
-The _Offset_ properties apply an offset to the Target Bones. _Location Offset_ will be always relative to the Target Bone while _Rotation Offset_ will be relative to the rotation copy.
+The _Offset_ properties apply an offset to the Target Bones. _Location Offset_ will be relative to the Target Bone by default while _Rotation Offset_ will be relative to the rotation copy.
 
-> Changing a rotation related property or using _"Apply view as Offset"_ will correct the rotation for all the children of the selected Target Bones which are copying the exact rotation of their Source Bone. This doesn't apply to rotation changes made on the 3D Viewport.
+**_"Mode"_**. Allows you to choose the bone whose rotation the location offset will be relative to.
 
 **_"Copy Rotation"_**. Copies the exact world rotation of the Source Bone.
+> Changing a rotation related property or using _"Apply view as Offset"_ will correct the rotation for all the children of the selected Target Bones which are copying the exact rotation of their Source Bone. This doesn't apply to rotation changes made on the 3D Viewport.
 
 **_"Copy Location Change"_**. Copies the exact world location change of the Source Bone, this is the change relative to the Source Bone's origin which then gets applied to the current Target Bone's world location.
 
