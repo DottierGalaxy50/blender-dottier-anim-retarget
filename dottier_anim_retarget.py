@@ -2,6 +2,7 @@ import bpy
 import mathutils
 import math
 import textwrap
+import time
 
 #import os
 #bpy.ops.wm.console_toggle()
@@ -34,13 +35,18 @@ def check_scene_vars():
             "diff_loc_z": False,
             "diff_loc_frac": False,
             "diff_eloc": False,
+            "diff_loc_mode": False,
         }
-        
-    #Updates bone list if it was created before the latest update
-    if "l_exact" not in bpy.context.scene["dottier_retarget_vars"]["lst_bones"][0]: 
-        for bone in bpy.context.scene["dottier_retarget_vars"]["lst_bones"]:
-            bone["l_exact"] = False
-            bone["p_propagate"] = ""
+       
+    for first_bone in bpy.context.scene["dottier_retarget_vars"]["lst_bones"]:
+        if "l_exact" not in first_bone: #v1.1.0
+            for bone in bpy.context.scene["dottier_retarget_vars"]["lst_bones"]:
+                bone["l_exact"] = False
+                bone["p_propagate"] = ""
+        if "l_mode" not in first_bone: #v1.2.0
+            for bone in bpy.context.scene["dottier_retarget_vars"]["lst_bones"]:
+                bone["l_mode"] = "0"
+        break
 
 def remove_handlers():
     for f in bpy.app.handlers.load_post: 
@@ -126,6 +132,8 @@ def apply_to_frame(frame):
 #The location we copy from the Source Bone should be relative to his own parent, so we have to correct
 #the Target Bone to always be at the correct location independently of his own parent's rotation.
 def correct_location_change():
+    global b_ang, b_ang_base
+    
     check_scene_vars()
     source = bpy.context.scene["dottier_retarget_vars"]["source"]
     target = bpy.context.scene["dottier_retarget_vars"]["target"]
@@ -140,14 +148,32 @@ def correct_location_change():
         
         if not src_bone or not trg_bone: continue
     
+        src_scale = bpy.data.objects[source].matrix_world.to_scale()
+    
         loc_change_local = trg_bone["dottier_loc_change_local"].to_list() if trg_bone.get("dottier_loc_change_local") else (0,0,0)
         loc_change_world = trg_bone["dottier_loc_change_world"].to_list() if trg_bone.get("dottier_loc_change_world") else (0,0,0)
         loc_change_local = mathutils.Vector((loc_change_local[0], loc_change_local[1], loc_change_local[2]))
-        loc_change_world = mathutils.Vector((loc_change_world[0], loc_change_world[1], loc_change_world[2]))
+        loc_change_world = mathutils.Vector((loc_change_world[0], loc_change_world[1], loc_change_world[2])) * src_scale
         
         trg_base_rot = trg_bone.matrix.to_quaternion() @ trg_bone.matrix_basis.to_quaternion().inverted()
-        trg_bone.location = (trg_bone.location.copy() - loc_change_local) + (trg_base_rot.inverted() @ loc_change_world)
+        b_ang_parent = None
         
+        if trg_bone.parent != None:
+            b_ang_parent = b_ang[trg_bone.parent.name].copy() if trg_bone.parent.name in b_ang else trg_bone.parent.matrix.to_quaternion()
+        
+        if b_ang_parent != None:
+            rot_diff = trg_base_rot.rotation_difference(trg_bone.parent.matrix.to_quaternion())     
+            trg_base_rot = b_ang_parent @ rot_diff.inverted()
+            
+        if trg_bone.name in b_ang_base:       
+            if b_ang_parent != None:   
+                trg_base_rot = b_ang_parent @ b_ang_base[trg_bone.name].copy().inverted()
+            else:
+                trg_base_rot = b_ang_base[trg_bone.name].copy()
+                
+        src_scale = bpy.data.objects[source].matrix_world.to_scale()
+            
+        trg_bone.location += -loc_change_local + (trg_base_rot.inverted() @ loc_change_world)
         trg_bone["dottier_loc_change_local"] = (trg_base_rot.inverted() @ loc_change_world)
 
 #Differently to the location change, we only correct the rotation in determinated cases, we do it this way
@@ -178,26 +204,62 @@ def correct_rotation():
                 if child.name in lst_bone_names:
                     update_bone(child.name,correct_r=True)
                     lst_corrected.append(child.name)
+                    
+    #After correcting the rotation we should correct the location change as well
+    correct_location_change()
 
 #Corrects the location of all the Target Bones that are copying the exact location (this only refreshes them
 #as it is more tedious to actually properly correct them compared to the previous two functions).
-def correct_exact_copy():
+def correct_exact_copy(bone=None,all=None):
     target = bpy.context.scene["dottier_retarget_vars"]["target"]
     
     lst_bones = bpy.context.scene["dottier_retarget_vars"]["lst_bones"]
     lst_bone_names = [b_data["bone"] for b_data in lst_bones]
     lst_bone_selection = bpy.context.scene["dottier_retarget_vars"]["lst_bone_selection"]
+
+    lst_updated = []
+    
+    #If we specify a bone, do this
+    if bone != None:
+        trg_bone = bpy.data.objects[target].pose.bones.get(bone)
+        if trg_bone != None:
+            lst_bone_selection = [bone]
+    
+    #Correct entire children hierarchy
+    if all != None:
+        for bone in lst_bone_selection:   
+            trg_bone = bpy.data.objects[target].pose.bones.get(bone)
+            if trg_bone == None: continue
         
-    first_bone = lst_bone_selection[0]
-    trg_bone = bpy.data.objects[target].pose.bones.get(first_bone)
+            for child in trg_bone.children_recursive:
+                if child.name not in lst_bone_selection:
+                    lst_bone_selection.append(child.name)
+        
+    for bone in lst_bone_selection:   
+        trg_bone = bpy.data.objects[target].pose.bones.get(bone)
+        if trg_bone == None: continue
+        
+        trg_propagate = trg_bone["dottier_loc_exact_child"] if "dottier_loc_exact_child" in trg_bone else None
+        
+        for child in trg_bone.children_recursive:
+            if child.name not in lst_updated:
+                if "dottier_loc_exact_child" in child and child["dottier_loc_exact_child"] == trg_propagate:
+                    update_bone(child.name)
+                    lst_updated.append(child.name)
+
+#Clears the propagation parents of a Target Bone
+def clear_p_propagate(bonename):
+    target = bpy.context.scene["dottier_retarget_vars"]["target"]
+    lst_bone_selection = bpy.context.scene["dottier_retarget_vars"]["lst_bone_selection"]
     
-    if trg_bone == None: return
-    
-    for bone in trg_bone.children_recursive:
-        if bone.name not in lst_bone_selection:
-            if lst_bones[lst_bone_names.index(bone.name)]["l_exact"] == True:
-                update_bone(bone.name)
+    for bone in bpy.data.objects[target].pose.bones:
+        if "dottier_loc_exact_child" in bone and bone["dottier_loc_exact_child"] == bonename:
+            bone["dottier_loc_exact_child"] = None
+            bone["dottier_loc_exact_change"] = None
+            bone["dottier_loc_exact_move"] = None
+            update_bone(bone.name)
             
+#Location Change Influence  
 def bone_fraction(bone):
     check_scene_vars()
     source = bpy.context.scene["dottier_retarget_vars"]["source"]
@@ -244,7 +306,9 @@ def bone_fraction(bone):
     cur_trg = trg_bone
     
     loc_base = loc_offset = None
-    src_length = trg_length = 0    
+    src_length = trg_length = 0
+    
+    src_scale = bpy.data.objects[source].matrix_world.to_scale()
     
     for parent in src_bone.parent_recursive:    
         if cur_src.name in lst_bcopy_names:
@@ -254,7 +318,7 @@ def bone_fraction(bone):
             loc_base = mathutils.Vector((0.0, 0.0, 0.0))
 
         src_loc = cur_src.matrix @ cur_src.matrix_basis.to_quaternion().inverted().to_matrix().to_4x4() @ mathutils.Matrix.Translation(-cur_src.matrix_basis.to_translation()) @ loc_base
-        src_length += (src_loc-parent.matrix.to_translation()).length
+        src_length += ((src_loc-parent.matrix.to_translation()) * src_scale).length
         
         if parent.name == src_compare: break
         cur_src = parent
@@ -317,7 +381,7 @@ def update_all_bones():
     for bone in bpy.data.objects[target].pose.bones:
         update_bone(bone.name)
     
-def update_bone(bone, apply_view=None, move_exact=None, correct_r=None):
+def update_bone(bone, apply_view=None, move_exact=None, correct_r=None, update_p=None):
     global b_ang, b_ang_base, correct_location_next
     
     check_scene_vars()
@@ -345,6 +409,7 @@ def update_bone(bone, apply_view=None, move_exact=None, correct_r=None):
     
     new_matrix = pose_bone.matrix.copy() @ pose_bone.matrix_basis.to_quaternion().inverted().to_matrix().to_4x4() @ mathutils.Matrix.Translation(-pose_bone.matrix_basis.to_translation())
     rot = new_matrix.to_quaternion()
+    loc = mathutils.Vector((0, 0, 0))
     
     new_b_ang_base = rot.copy()
     
@@ -365,6 +430,8 @@ def update_bone(bone, apply_view=None, move_exact=None, correct_r=None):
     
     src_rot_world = bpy.data.objects[source].matrix_world.to_quaternion()
     trg_rot_world = bpy.data.objects[target].matrix_world.to_quaternion()
+    src_scl_world = bpy.data.objects[source].matrix_world.to_scale()
+    trg_scl_world = bpy.data.objects[target].matrix_world.to_scale()
     
     #Copy Location & Rotation
         
@@ -375,9 +442,9 @@ def update_bone(bone, apply_view=None, move_exact=None, correct_r=None):
         loc_base = mathutils.Vector((bone_data["bx"], bone_data["by"], bone_data["bz"]))  
         new_loc = trg_rot_world.inverted() @ src_bone_matrix.to_quaternion() @ ((src_bone.location-loc_base) * bone_data["l_frac"]) 
     
-    new_rot = None
+    new_rot = mathutils.Quaternion((1, 0, 0, 0))
             
-    if bone_data["r"] and src_bone:
+    if src_bone: #if bone_data["r"] and src_bone:
         new_rot = trg_rot_world.inverted() @ src_rot_world @ src_bone.matrix.to_quaternion()
         
     #scale = pose_bone.scale.copy()
@@ -386,24 +453,21 @@ def update_bone(bone, apply_view=None, move_exact=None, correct_r=None):
     
     #Copy Exact Location
     
-    if bone_data["l_exact"] == True:
+    if bone_data["l_exact"] == True and src_bone:
         
         v1 = mathutils.Vector((0,0,0))
-        v2 = mathutils.Vector((0,0,0))
-        v3 = mathutils.Vector((0,0,0))
-        v4 = mathutils.Vector((0,0,0))
   
         parent_list = []
         found_parent = False
         
         def calcs(parent,p_tar,no_parent):
-            nonlocal parent_list,found_parent,v1,v2,v3,v4
+            nonlocal parent_list,found_parent,v1
 
             pbone_data = lst_bones[lst_bone_names.index(parent.name)] if parent.name in lst_bone_names else None
             
             #Only needed when there is no parent
             if no_parent: bpy.context.view_layer.update()
-            
+
             ll_rot = None #Parent bone rotation
         
             if parent.name in b_ang:       
@@ -413,34 +477,53 @@ def update_bone(bone, apply_view=None, move_exact=None, correct_r=None):
                 ll_rot = trg_rot_world @ (parent.matrix.to_quaternion() @ parent.matrix_basis.to_quaternion().inverted())
             
             loc_change_world = parent["dottier_loc_change_world"].to_list() if parent.get("dottier_loc_change_world") else (0,0,0)
-            loc_change_world = mathutils.Vector((loc_change_world[0], loc_change_world[1], loc_change_world[2]))
+            loc_change_world = mathutils.Vector((loc_change_world[0], loc_change_world[1], loc_change_world[2])) * src_scl_world
             
-            v5 = mathutils.Vector((0,0,0))
+            offset_rot = ll_rot
+            p_propagate_child = None
             
-            #The "v" variables are for vectors. I don't undertand matrices well and i just wanted to make this 
-            #work as quickly as possible, so i just tried a bunch of different combinations of things until i
-            #got the results i wanted. Got too lazy to make sense of them and rename them.
+            if "dottier_loc_exact_child" in parent and parent["dottier_loc_exact_child"] != None:
+                p_propagate_child = parent["dottier_loc_exact_child"]
+                
+            offset = mathutils.Vector((pbone_data["lx"], pbone_data["ly"], pbone_data["lz"]))
+            
+            #We firstly determine the location offset mode to set the rotation we need to use
+            if pbone_data != None:
+                if pbone_data["l_mode"] == "1":
+                    p_src_bone = bpy.data.objects[source].pose.bones.get(pbone_data["bcopy"])
+                    if p_src_bone != None:
+                        offset_rot = trg_rot_world.inverted() @ src_rot_world @ p_src_bone.matrix.to_quaternion()
+                        offset = (trg_rot_world.inverted() @ ll_rot).inverted() @ (offset_rot @ mathutils.Vector((pbone_data["lx"], pbone_data["ly"], pbone_data["lz"])))
+                
+                elif pbone_data["l_mode"] == "2" and p_propagate_child != None:
+                    p_child_data = lst_bones[lst_bone_names.index(p_propagate_child)] if p_propagate_child in lst_bone_names else None
+                    if p_child_data != None and p_child_data["l_exact"]:
+                        p_child_src_bone = bpy.data.objects[source].pose.bones.get(p_child_data["bcopy"])
+                        if p_child_src_bone != None:
+                            offset_rot = trg_rot_world.inverted() @ src_rot_world @ p_child_src_bone.matrix.to_quaternion()
+                            offset = (trg_rot_world.inverted() @ ll_rot).inverted() @ (offset_rot @ mathutils.Vector((pbone_data["lx"], pbone_data["ly"], pbone_data["lz"])))
+            
+            #The "v" variables are for vectors. I just tried a bunch of different combinations until i got the
+            #results i wanted. Got too lazy to make sense of them and rename them.
+            v2 = mathutils.Vector((0,0,0))
+            
             if parent.name == p_tar:
                 if not no_parent:
                     v1 += ((ll_rot @ parent.location))
-                v4 = loc_change_world
+                v2 = (trg_rot_world @ loc_change_world)
             else:
                 v1 += ((ll_rot @ parent.location)) - (trg_rot_world @ loc_change_world)
-                v2 += ((ll_rot @ (parent.location - mathutils.Vector((pbone_data["lx"], pbone_data["ly"], pbone_data["lz"]))))) - (trg_rot_world @ loc_change_world)
-                v3 += (ll_rot @ mathutils.Vector((pbone_data["lx"], pbone_data["ly"], pbone_data["lz"])))
-                v5 = (ll_rot @ mathutils.Vector((pbone_data["lx"], pbone_data["ly"], pbone_data["lz"])))
             
             #if it's the propagate bone
             if parent.name == p_tar:
                 bpy.context.view_layer.update()
-                src_loc = src_rot_world @ (src_bone.matrix.to_translation() - ((src_bone.matrix.to_quaternion() @ src_bone.matrix_basis.to_quaternion().inverted()) @ src_bone.location))
+                src_loc = src_rot_world @ (src_bone.matrix.to_translation() - ((src_bone.matrix.to_quaternion() @ src_bone.matrix_basis.to_quaternion().inverted()) @ src_bone.location)) * src_scl_world
                 trg_loc = trg_rot_world @ (pose_bone.matrix.to_translation() - ((pose_bone.matrix.to_quaternion() @ pose_bone.matrix_basis.to_quaternion().inverted()) @ pose_bone.location))
-    
-                #Same as with the "v" vars.
+
+                #Same as with the "v" vars
                 chng = (ll_rot.inverted() @ ((src_loc-trg_loc+v1)))
-                chng2 = ll_rot.inverted() @ ((src_loc-trg_loc+v2+v3))
-                chng3 = ll_rot.inverted() @ ((v5+v1-v4+v2+v3+((src_loc-trg_loc)*2))) + mathutils.Vector((pbone_data["lx"], pbone_data["ly"], pbone_data["lz"]))
-                chng4 = chng2 + mathutils.Vector((pbone_data["lx"], pbone_data["ly"], pbone_data["lz"]))
+                chng2 = (parent.location-offset-chng)
+                chng3 = (chng)-(chng2)-(ll_rot.inverted() @ v2)                
                 
                 parent_selected = False
                 found_parent = True
@@ -452,8 +535,8 @@ def update_bone(bone, apply_view=None, move_exact=None, correct_r=None):
                 if not no_parent:
                     #If we are not doing one of these operation or the up most parent is selected: change his location
                     if (move_exact != True and apply_view != True and correct_r != True) or parent_selected:
-                        parent.location = chng + mathutils.Vector((pbone_data["lx"], pbone_data["ly"], pbone_data["lz"]))
-                        
+                        parent.location = chng + offset
+
                     pose_bone["dottier_loc_exact_change"] = None
                     pose_bone["dottier_loc_exact_move"] = None
                     
@@ -462,7 +545,7 @@ def update_bone(bone, apply_view=None, move_exact=None, correct_r=None):
                     
                     parent["dottier_loc_exact_child"] = bonename
                     parent["dottier_loc_exact_change"] = (chng3[0],chng3[1],chng3[2])
-                    parent["dottier_loc_exact_move"] = (chng4[0],chng4[1],chng4[2])
+                    parent["dottier_loc_exact_move"] = (chng2[0],chng2[1],chng2[2])
                 else:
                     parent["dottier_loc_exact_change"] = (chng[0],chng[1],chng[2])
                     parent["dottier_loc_exact_move"] = (0,0,0)
@@ -477,17 +560,17 @@ def update_bone(bone, apply_view=None, move_exact=None, correct_r=None):
         if not found_parent:
             parent_list.clear()
             v1 = mathutils.Vector((0,0,0))
-            v2 = mathutils.Vector((0,0,0))
-            v3 = mathutils.Vector((0,0,0))
-            v4 = mathutils.Vector((0,0,0))
             calcs(pose_bone,bonename,True)
             
     clear_exact = mathutils.Vector((0,0,0))
     clear_exact_no_p = mathutils.Vector((0,0,0))
     cpy_exact_move = mathutils.Vector((0,0,0))
+    propagate_child = None
     
     #If it's a propagate parent bone, we need to update his "Copy Exact Location" child
-    if "dottier_loc_exact_child" in pose_bone and pose_bone["dottier_loc_exact_child"] != None:
+    if ("dottier_loc_exact_child" in pose_bone and pose_bone["dottier_loc_exact_child"] != None) and not update_p:
+        propagate_child = pose_bone["dottier_loc_exact_child"]
+
         if pose_bone.parent != None and ("dottier_loc_exact_child" not in pose_bone.parent or pose_bone.parent["dottier_loc_exact_child"] != pose_bone["dottier_loc_exact_child"]):
             bpy.context.view_layer.update()
             if apply_view == False:
@@ -505,29 +588,45 @@ def update_bone(bone, apply_view=None, move_exact=None, correct_r=None):
             clear_exact = mathutils.Vector((pose_bone["dottier_loc_exact_change"][0],pose_bone["dottier_loc_exact_change"][1],pose_bone["dottier_loc_exact_change"][2]))
             clear_exact_no_p = clear_exact
     
-    #Apply Location & Rotation
+    #Apply Location
+    
+    offset_rot = rot
+    
+    #We firstly determine the location offset mode to set the rotation we need to use
+    if bone_data["l_mode"] == "1":
+        offset_rot = new_rot
+    elif bone_data["l_mode"] == "2" and propagate_child != None:
+        child_data = lst_bones[lst_bone_names.index(propagate_child)] if propagate_child in lst_bone_names else None
+        if child_data != None and child_data["l_exact"]:
+            child_src_bone = bpy.data.objects[source].pose.bones.get(child_data["bcopy"])
+            if child_src_bone != None:
+                offset_rot = trg_rot_world.inverted() @ src_rot_world @ child_src_bone.matrix.to_quaternion()
         
     if bone_data["l"] and src_bone: 
         if not correct_r:
             if apply_view:
-                loc_offset = pose_bone.location - (rot.inverted() @ new_loc) - clear_exact
+                loc_offset = ((offset_rot.inverted() @ rot) @ (pose_bone.location-clear_exact)) - (offset_rot.inverted() @ (new_loc * src_scl_world)) 
                 bone_data["lx"] = loc_offset[0]
                 bone_data["ly"] = loc_offset[1]
                 bone_data["lz"] = loc_offset[2]
                 
-            pose_bone["dottier_loc_change_local"] = (rot.inverted() @ new_loc)
+            pose_bone["dottier_loc_change_local"] = rot.inverted() @ (new_loc * src_scl_world)
             pose_bone["dottier_loc_change_world"] = new_loc
                 
-            if move_exact:
-                loc_offset = (rot.inverted() @ ((trg_rot_world.inverted() @ src_rot_world @ src_bone.matrix.to_translation())-new_matrix.to_translation())) - (rot.inverted() @ new_loc) - clear_exact+cpy_exact_move
+            if move_exact: 
+                local_matrix = src_bone.matrix
+                armature_world_matrix = bpy.data.objects[source].matrix_world
+                world_matrix = armature_world_matrix @ local_matrix
+                
+                loc_offset = (offset_rot.inverted() @ (((trg_rot_world.inverted() @ src_rot_world @ (src_bone.matrix.to_translation() * src_scl_world))-new_matrix.to_translation()))) - (offset_rot.inverted() @ (new_loc * src_scl_world)) - ((offset_rot.inverted() @ rot) @ (clear_exact+cpy_exact_move))
                 bone_data["lx"] = loc_offset[0]
                 bone_data["ly"] = loc_offset[1]
                 bone_data["lz"] = loc_offset[2]
 
-            loc = (rot.inverted() @ new_loc) + mathutils.Vector((bone_data["lx"], bone_data["ly"], bone_data["lz"]))
+            loc = rot.inverted() @ (new_loc * src_scl_world) #+ (rot.inverted() @ (new_rot @ mathutils.Vector((bone_data["lx"], bone_data["ly"], bone_data["lz"]))))
     else:
         if apply_view:
-            loc_offset = pose_bone.location - clear_exact
+            loc_offset = ((offset_rot.inverted() @ rot) @ (pose_bone.location-clear_exact))
             bone_data["lx"] = loc_offset[0]
             bone_data["ly"] = loc_offset[1]
             bone_data["lz"] = loc_offset[2]
@@ -536,12 +635,19 @@ def update_bone(bone, apply_view=None, move_exact=None, correct_r=None):
         pose_bone["dottier_loc_change_world"] = 0.0
             
         if move_exact and src_bone:
-            loc_offset = (rot.inverted() @ ((trg_rot_world.inverted() @ src_rot_world @ src_bone.matrix.to_translation())-new_matrix.to_translation())) - clear_exact+cpy_exact_move
+            loc_offset = (offset_rot.inverted() @ ((trg_rot_world.inverted() @ src_rot_world @ (src_bone.matrix.to_translation() * src_scl_world))-new_matrix.to_translation())) - ((offset_rot.inverted() @ rot) @ (clear_exact+cpy_exact_move))
             bone_data["lx"] = loc_offset[0]
             bone_data["ly"] = loc_offset[1]
             bone_data["lz"] = loc_offset[2]
             
-        loc = mathutils.Vector((bone_data["lx"],bone_data["ly"],bone_data["lz"]))
+        #loc = mathutils.Vector((bone_data["lx"], bone_data["ly"], bone_data["lz"]))
+        
+    if bone_data["l_mode"] == "1" or (bone_data["l_mode"] == "2" and propagate_child != None):
+        loc += (rot.inverted() @ (offset_rot @ mathutils.Vector((bone_data["lx"], bone_data["ly"], bone_data["lz"]))))
+    else:
+        loc += mathutils.Vector((bone_data["lx"], bone_data["ly"], bone_data["lz"]))
+        
+    #Apply Rotation
 
     if bone_data["r"] and src_bone:
         rot_mode = pose_bone.rotation_mode
@@ -573,11 +679,11 @@ def update_bone(bone, apply_view=None, move_exact=None, correct_r=None):
     b_ang[bonename] = rot.copy()
 
     if not correct_r:
-        pose_bone.location = loc + clear_exact_no_p
+        pose_bone.location = loc + clear_exact
     #pose_bone.scale = scale
     
     #If it's a propagate parent bone, we need to update his "Copy Exact Location" child
-    if "dottier_loc_exact_child" in pose_bone and pose_bone["dottier_loc_exact_child"] != None:
+    if ("dottier_loc_exact_child" in pose_bone and pose_bone["dottier_loc_exact_child"] != None) and not update_p:
         if pose_bone.parent != None and ("dottier_loc_exact_child" not in pose_bone.parent or pose_bone.parent["dottier_loc_exact_child"] != pose_bone["dottier_loc_exact_child"]):
             update_bone(pose_bone["dottier_loc_exact_child"],correct_r=True)
         else: 
@@ -597,10 +703,10 @@ def update_bone(bone, apply_view=None, move_exact=None, correct_r=None):
 bl_info = {
     "name": "Dottier's Anim Retarget",
     "author": "DottierGalaxy50",
-    "version": (1, 1, 0),
+    "version": (1, 2, 0),
     "blender": (4, 0),
     "location": "3D Viewport > Sidebar > Dottier's Anim Retarget",
-    "description": "Retarget and correct animations onto other armatures",
+    "description": "Retarget and correct animations to other armatures",
     "category": "Animation",
     "doc_url": "https://github.com/DottierGalaxy50/blender-dottier-anim-retarget",
 }
@@ -683,6 +789,13 @@ def dottier_update_panel():
         retarget_props.p_propagate = "(Propagation shouldn't overlap with another)"
     else:
         retarget_props.p_propagate = bone_data["p_propagate"]
+        
+    # Location Offset Mode
+    
+    if multi_bone_sel_props["diff_loc_mode"]:
+        retarget_props.loc_mode = "0"
+    else:
+        retarget_props.loc_mode = bone_data["l_mode"]
     
     update_values = True
 
@@ -703,6 +816,7 @@ def multi_bone_sel_equality():
     multi_bone_sel_props["diff_loc_z"] = False
     multi_bone_sel_props["diff_loc_frac"] = False
     multi_bone_sel_props["diff_eloc"] = False
+    multi_bone_sel_props["diff_loc_mode"] = False
     
     first_bone_data = None
     
@@ -732,6 +846,7 @@ def multi_bone_sel_equality():
         if first_bone_data["l_frac"] != bone_data["l_frac"]: multi_bone_sel_props["diff_loc_frac"] = True
         
         if first_bone_data["l_exact"] != bone_data["l_exact"]: multi_bone_sel_props["diff_eloc"] = True
+        if first_bone_data["l_mode"] != bone_data["l_mode"]: multi_bone_sel_props["diff_loc_mode"] = True
         
     if True in multi_bone_sel_props.values():
         multi_bone_sel_props["difference"] = True
@@ -760,7 +875,7 @@ def update_transformation(trans_type,axis,val):
         if multi_bone_sel_props["diff_"+trans_type+"_"+axis[1]]:
             multi_bone_sel_equality()
             
-    correct_exact_copy()
+    correct_exact_copy(all=True)
         
 def rx_update(self, context):
     update_transformation("rot","rx",self.rot_x); return None
@@ -782,10 +897,25 @@ def prop_cp_loc(self, context):
     check_scene_vars()
     lst_bones = bpy.context.scene["dottier_retarget_vars"]["lst_bones"]
     lst_bone_names = [b_data["bone"] for b_data in lst_bones]
-    multi_bone_sel_props = bpy.context.scene["dottier_retarget_vars"]["multi_bone_sel_props"]
 
     for bone in bpy.context.scene["dottier_retarget_vars"]["lst_bone_selection"]:
         lst_bones[lst_bone_names.index(bone)]["l"] = self.cp_loc
+        update_bone(bone)
+            
+    correct_exact_copy(all=True)
+                
+    return None
+
+def prop_loc_frac(self, context):
+    global update_values
+    if not update_values: return
+    
+    check_scene_vars()
+    lst_bones = bpy.context.scene["dottier_retarget_vars"]["lst_bones"]
+    lst_bone_names = [b_data["bone"] for b_data in lst_bones]
+    multi_bone_sel_props = bpy.context.scene["dottier_retarget_vars"]["multi_bone_sel_props"]
+
+    for bone in bpy.context.scene["dottier_retarget_vars"]["lst_bone_selection"]:
         lst_bones[lst_bone_names.index(bone)]["l_frac"] = self.loc_frac
         update_bone(bone)
         
@@ -793,7 +923,7 @@ def prop_cp_loc(self, context):
         if multi_bone_sel_props["diff_loc_frac"]:
             multi_bone_sel_equality()
             
-    correct_exact_copy()
+    correct_exact_copy(all=True)
                 
     return None
 
@@ -810,7 +940,7 @@ def prop_cp_rot(self, context):
         update_bone(bone)
 
     correct_rotation()
-    correct_exact_copy()
+    correct_exact_copy(all=True)
 
     return None
 
@@ -824,10 +954,10 @@ def prop_cp_eloc(self, context):
 
     for bone in bpy.context.scene["dottier_retarget_vars"]["lst_bone_selection"]:
         lst_bones[lst_bone_names.index(bone)]["l_exact"] = self.cp_eloc
-        update_bone(lst_bones[lst_bone_names.index(bone)]["p_propagate"])
+        clear_p_propagate(bone)
         update_bone(bone)
-    
-    correct_exact_copy()
+        correct_exact_copy(all=True,bone=lst_bones[lst_bone_names.index(bone)]["p_propagate"])
+        update_bone(bone)
                 
     return None
 
@@ -956,8 +1086,9 @@ def lst_item_update(self, context):
     lst_bones[self.index]["bone"] = new_bonename   
     lst_bones[self.index]["bcopy"] = self.bcopy
     
-    update_bone(new_bonename)
-    correct_rotation()
+    #update_bone(new_bonename)
+    #correct_rotation()
+    update_all_bones()
 
     return None
 
@@ -991,19 +1122,31 @@ def p_propagate_update(self, context):
     lst_bones = bpy.context.scene["dottier_retarget_vars"]["lst_bones"]
     lst_bone_names = [b_data["bone"] for b_data in lst_bones]
     
-    for bone in bpy.data.objects[target].pose.bones:
-        if "dottier_loc_exact_child" in bone and bone["dottier_loc_exact_child"] == trg_bone.name:
-            bone["dottier_loc_exact_child"] = None
-            bone["dottier_loc_exact_change"] = None
-            bone["dottier_loc_exact_move"] = None
-            update_bone(bone.name)
+    clear_p_propagate(trg_bone.name)
+    clear_p_propagate(self.p_propagate)
+    clear_p_propagate(lst_bones[lst_bone_names.index(trg_bone.name)]["p_propagate"])
     
     lst_bones[lst_bone_names.index(trg_bone.name)]["p_propagate"] = self.p_propagate
+    
+    update_bone(trg_bone.name)
+    correct_exact_copy(all=True,bone=self.p_propagate)
+    update_bone(trg_bone.name)
 
-    update_bone(self.p_propagate)
-    update_bone(trg_bone.name)  
-    correct_rotation()
-    correct_exact_copy()
+    return None
+
+def prop_loc_mode(self, context):
+    global update_values
+    if not update_values: return
+    
+    check_scene_vars()
+    lst_bones = bpy.context.scene["dottier_retarget_vars"]["lst_bones"]
+    lst_bone_names = [b_data["bone"] for b_data in lst_bones]
+
+    for bone in bpy.context.scene["dottier_retarget_vars"]["lst_bone_selection"]:
+        lst_bones[lst_bone_names.index(bone)]["l_mode"] = self.loc_mode
+        update_bone(bone)
+            
+    correct_exact_copy(all=True)
 
     return None
 
@@ -1024,15 +1167,27 @@ class dottier_retarget_props(bpy.types.PropertyGroup):
     loc_y : bpy.props.FloatProperty(name= "Y", update=ly_update)
     loc_z : bpy.props.FloatProperty(name= "Z", update=lz_update)
     
-    loc_frac : bpy.props.FloatProperty(name= "Influence", soft_min=0, soft_max=2, step=1, update=prop_cp_loc, description="How much of the location change to apply") #(Default value is an estimate obtained by the length difference between both bones and a shared parent from both armatures)
+    loc_frac : bpy.props.FloatProperty(name= "Influence", soft_min=0, soft_max=2, step=1, update=prop_loc_frac, description="How much of the location change to apply") #(Default value is an estimate obtained by the length difference between both bones and a shared parent from both armatures)
     
-    Source : bpy.props.PointerProperty(type=bpy.types.Armature, update=armatures_update, description="The armature you want to copy the animations from")
-    Target : bpy.props.PointerProperty(type=bpy.types.Armature, update=armatures_update, description="The armature you want to pass the animations to")
+    Source : bpy.props.PointerProperty(type=bpy.types.Object, poll=lambda self, obj: obj.type == 'ARMATURE', update=armatures_update, description="The armature you want to copy the animations from")
+    Target : bpy.props.PointerProperty(type=bpy.types.Object, poll=lambda self, obj: obj.type == 'ARMATURE', update=armatures_update, description="The armature you want to pass the animations to")
 
     lst_bones : bpy.props.CollectionProperty(type=dottier_retarget_lst_item)
     
     cp_eloc : bpy.props.BoolProperty(name= "Copy Exact Location", update=prop_cp_eloc, description="Copy Source Bone's exact location. (Doesn't copy location change. Affected by parents location offsets)")
     p_propagate :  bpy.props.StringProperty(name= "Propagate to", search=dottier_propagate_search, update=p_propagate_update, description="Propagates the location transformation of \"Copy Exact Location\" up to a Target Bone's parent, like some sort of translation-only IK")
+    
+    loc_mode : bpy.props.EnumProperty(
+        name="Mode",
+        description="Which bone's rotation will the location offset be relative to",
+        items=[
+            ('0', "Parent", "Use Target Bone's parent"),
+            ('1', "Source", "Use Target Bone's linked Source Bone"),
+            ('2', "Propagate Child", "If a Target Bone's child propagates to him, use that child's Source Bone instead"),
+        ],
+        default='0',  # Default value
+        update=prop_loc_mode,
+    )
 
 class VIEW3D_PT_dottier_retarget_panel(bpy.types.Panel):
     bl_space_type = 'VIEW_3D'
@@ -1059,8 +1214,8 @@ class VIEW3D_PT_dottier_retarget_panel(bpy.types.Panel):
         lst_bones = bpy.context.scene["dottier_retarget_vars"]["lst_bones"]
         lst_bone_names = [b_data["bone"] for b_data in lst_bones]
         
-        layout.prop_search(retarget_props, "Source", bpy.data, "armatures", text="Source", icon="ARMATURE_DATA")
-        layout.prop_search(retarget_props, "Target", bpy.data, "armatures", text="Target", icon="ARMATURE_DATA")
+        layout.prop_search(retarget_props, "Source", scene, "objects", text="Source", icon="ARMATURE_DATA")
+        layout.prop_search(retarget_props, "Target", scene, "objects", text="Target", icon="ARMATURE_DATA")
         
         if not missing_armature:
             row = layout.row()
@@ -1161,8 +1316,10 @@ class VIEW3D_PT_dottier_retarget_panel(bpy.types.Panel):
             row.operator("dottier_retarget.apply_view", text="Apply view as Offset", icon="GRID")
             row.operator("dottier_retarget.refresh", text="", icon="FILE_REFRESH")
                 
-            row = layout.row()
+            row = layout.row().split(factor=0.63)
             row.label(text="Location Offset:")
+            row.alignment = 'LEFT'
+            row.prop(retarget_props, "loc_mode")
             column = layout.row().column(align=True)
             
             row = column.row(align=True)
@@ -1287,7 +1444,7 @@ class VIEW3D_OT_dottier_retarget_refresh(bpy.types.Operator):
     def execute(self, context):
         for bone in bpy.context.scene["dottier_retarget_vars"]["lst_bone_selection"]:
             update_bone(bone)
-            
+        
         correct_rotation()
         
         return {'FINISHED'}
@@ -1319,7 +1476,7 @@ class VIEW3D_OT_dottier_retarget_estimate_fraction(bpy.types.Operator):
             bone_fraction(bone)
             update_bone(bone)
         
-        correct_exact_copy()
+        correct_exact_copy(all=True)
         dottier_update_panel()
         
         return {'FINISHED'}
@@ -1335,7 +1492,7 @@ class VIEW3D_OT_dottier_retarget_set_pose_as_base(bpy.types.Operator):
             set_source_bone_pose_as_base(bone,False)
             update_bone(bone)
             
-        correct_exact_copy()
+        correct_exact_copy(all=True)
         
         return {'FINISHED'}
     
@@ -1350,7 +1507,7 @@ class VIEW3D_OT_dottier_retarget_clear_location_base(bpy.types.Operator):
             set_source_bone_pose_as_base(bone,True)
             update_bone(bone)
             
-        correct_exact_copy()
+        correct_exact_copy(all=True)
         
         return {'FINISHED'}
     
@@ -1360,11 +1517,18 @@ class VIEW3D_OT_dottier_retarget_apply_keyframes(bpy.types.Operator):
     bl_idname = "dottier_retarget.apply_keyframes"
     bl_options = {'REGISTER', 'UNDO'}
     
-    def execute(self, context):  
+    def execute(self, context):
         scene = bpy.context.scene
+        start_time = time.time()
+        
         update_all_bones()
         for frame in range(scene.frame_start, scene.frame_end+1):
             apply_to_frame(frame)
+            
+        end_time = time.time()
+        exec_time = end_time-start_time
+        
+        self.report({'INFO'}, f"Keyframes updated in {exec_time:.2f} seconds")
         
         return {'FINISHED'}
     
@@ -1442,6 +1606,7 @@ class VIEW3D_OT_dottier_retarget_gen_list(bpy.types.Operator):
                 "bz": 0,
                 "l_exact": False,
                 "p_propagate": "",
+                "l_mode": "0",
             })
             
         bpy.context.scene["dottier_retarget_vars"]["lst_bones"] = lst_bones_new.copy()
@@ -1479,6 +1644,7 @@ def dottier_write_data(context, filepath):
         f.write(','+str(bone["bz"]))
         f.write(','+str(bone["l_exact"]))
         f.write(','+str(bone["p_propagate"]))
+        f.write(','+str(bone["l_mode"]))
         f.write('\n')
 
     f.close()
@@ -1500,6 +1666,8 @@ def dottier_load_data(context, filepath):
             if len(val) == 14:
                 val.append("False")
                 val.append("")
+            if len(val) == 16:
+                val.append("0")
             
             new_lst_bones.append({
                 "bone": val[0],
@@ -1518,6 +1686,7 @@ def dottier_load_data(context, filepath):
                 "bz": float(val[13]),
                 "l_exact": eval(val[14]),
                 "p_propagate": val[15],
+                "l_mode": str(int(val[16])),
             })
 
         f.close()  
@@ -1542,6 +1711,7 @@ def dottier_load_data(context, filepath):
                 "bz": 0.0,
                 "l_exact": False,
                 "p_propagate": "",
+                "l_mode": "0",
             })
 
     bpy.context.scene["dottier_retarget_vars"]["lst_bones"] = new_lst_bones.copy()
